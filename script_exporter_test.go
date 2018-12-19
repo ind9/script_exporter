@@ -6,7 +6,6 @@ import (
 	"os"
 	"testing"
 	"github.com/stretchr/testify/assert"
-	"fmt"
 )
 
 var config = &Config{
@@ -99,7 +98,7 @@ scripts:
    	finalContent, err := readYamlsinDirOrFile(dir)
 
    	if err != nil {
-   		fmt.Println("Error: ", err)
+   		t.Errorf("Unexpected: %s", err.Error())
    	}
 
 	expectedResult := `scripts:
@@ -136,7 +135,7 @@ scripts:
 	finalContent, err := readYamlsinDirOrFile(tmpFile1.Name())
 
 	if err != nil {
-		fmt.Println("Error: ", err)
+		t.Errorf("Unexpected: %s", err.Error())
 	}
 
 	expectedResult := `scripts:
