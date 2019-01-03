@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 
 var (
 	showVersion   = flag.Bool("version", false, "Print version information.")
-	configFile    = flag.String("config.file", "script-exporter.yml", "Script exporter configuration file.")
+	configFile    = flag.String("config.file", "script-exporter.yml", "Script exporter configuration file or directory.")
 	listenAddress = flag.String("web.listen-address", ":9172", "The address to listen on for HTTP requests.")
 	metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 	shell         = flag.String("config.shell", "/bin/sh", "Shell to execute script")
@@ -146,6 +147,79 @@ func scriptRunHandler(w http.ResponseWriter, r *http.Request, config *Config) {
 	}
 }
 
+func scriptRunHandler2(w http.ResponseWriter, config *Config) {
+
+	scripts, err := scriptFilter(config.Scripts, "", ".*")
+
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	measurements := runScripts(scripts)
+
+	for _, measurement := range measurements {
+		fmt.Fprintf(w, "script_duration_seconds{script=\"%s\"} %f\n", measurement.Script.Name, measurement.Duration)
+		fmt.Fprintf(w, "script_success{script=\"%s\"} %d\n", measurement.Script.Name, measurement.Success)
+	}
+}
+
+func combineYamlScripts(files []string) ([]byte, error) {
+	config := Config{}
+	var combinedScripts []*Script
+
+	for _, file := range files {
+		fileContent, err := ioutil.ReadFile(file)
+		err = yaml.Unmarshal(fileContent, &config)
+
+		if err != nil {
+			log.Fatalf("Error reading config file: %s", err)
+		}
+
+		for _, script := range config.Scripts {
+			combinedScripts = append(combinedScripts, script)
+		}
+	}
+	finalConfig := Config{combinedScripts}
+	combinedConfig, err := yaml.Marshal(finalConfig)
+
+	return []byte(combinedConfig), err
+}
+
+func readYamlsinDirOrFile(path string) ([]byte, error) {
+	var finalFileContent []byte
+
+	fileOrDir, err := os.Stat(path)
+	if err != nil {
+		log.Fatalf("Error opening file or dir: %s", err)
+	}
+
+	switch mode := fileOrDir.Mode(); {
+	case mode.IsDir():
+		var files []string
+		err := filepath.Walk(path, func(directoryPath string, info os.FileInfo, err error) error {
+			if !info.IsDir() {
+				files = append(files, directoryPath)
+			}
+			return nil
+		})
+
+		finalFileContent, err = combineYamlScripts(files)
+
+		if err != nil {
+			log.Fatalf("Error: %s", err)
+		}
+
+		log.Infof("Loaded script configurations\n%s", finalFileContent)
+
+	case mode.IsRegular():
+		finalFileContent, err = combineYamlScripts([]string{path})
+		log.Infof("Loaded script configurations\n%s", finalFileContent) 	
+	}
+
+	return finalFileContent, err
+}
+
 func init() {
 	prometheus.MustRegister(version.NewCollector("script_exporter"))
 }
@@ -159,8 +233,9 @@ func main() {
 	}
 
 	log.Infoln("Starting script_exporter", version.Info())
+	log.Infoln("Config File/Directory Path", *configFile)
 
-	yamlFile, err := ioutil.ReadFile(*configFile)
+	yamlFile, err := readYamlsinDirOrFile(*configFile)
 
 	if err != nil {
 		log.Fatalf("Error reading config file: %s", err)
@@ -182,7 +257,11 @@ func main() {
 		}
 	}
 
-	http.Handle("/metrics", prometheus.Handler())
+	// http.Handle("/metrics", prometheus.Handler())
+
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		scriptRunHandler2(w, &config)
+	})
 
 	http.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
 		scriptRunHandler(w, r, &config)
